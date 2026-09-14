@@ -1,38 +1,3 @@
-"""
-NaijaShop marketing spend ingestion - Method B: Google Sheets API (private sheets)
-
-Use this instead of Method A when the sheet CANNOT be made public, even via
-"Publish to web." Same end result, more setup, no public exposure.
-
-ONE-TIME SETUP (do this once, not every run):
-1. Go to console.cloud.google.com -> create a project (or reuse one)
-2. APIs & Services -> Library -> enable "Google Sheets API"
-3. APIs & Services -> Credentials -> Create Credentials -> Service Account
-4. Give it a name (e.g. "naijashop-ingestion"), no special roles needed
-5. Open the service account -> Keys -> Add Key -> Create new key -> JSON
-   This downloads a .json credentials file - keep it private, never commit
-   it to Git (add it to .gitignore)
-6. Open the actual Google Sheet -> Share -> paste in the service account's
-   email (looks like naijashop-ingestion@yourproject.iam.gserviceaccount.com)
-   -> give it "Viewer" access
-   (This step is what makes the private sheet readable by the script -
-   without it, the API will return a permissions error)
-
-Usage:
-    python ingest_marketing_sheets_api.py \
-        --credentials service_account.json \ == --credentials naijashop-ingestion-70e2d912e6fa.json
-        --sheet-id 1AbCdEfGhIjKlMnOpQrStUvWxYz \ == --sheet-id 1_Fv13CpdgdO6UthSnw7cBvJyXBlvJ8MQ0nJUAPkVLjM
-        --range "Sheet1!A1:G100" \ == --range "naijashop_marketing_ad_spend.csv!A1:G308"
-        --dsn "dbname=naijashop user=postgres password=Joey4432 host=localhost"
-
-The --sheet-id is the long ID in the sheet's URL, between /d/ and /edit
-
-FIXED VERSION: primary key is (campaign_id, spend_date) together, not campaign_id
-alone - this matters because the real sheet logs spend PER DAY per campaign,
-so the same campaign_id legitimately appears many times with different dates.
-
-"""
- 
 import argparse
 import sys
  
@@ -50,10 +15,6 @@ CREATE TABLE IF NOT EXISTS marketing_spend (
 );
 """
  
-# Now keyed on BOTH campaign_id and spend_date - so "CMP001" on 2026-08-01
-# and "CMP001" on 2026-08-02 are two different, valid rows. Only a genuine
-# re-run for the exact same campaign+day updates the existing row instead
-# of duplicating it.
 UPSERT_SQL = """
 INSERT INTO marketing_spend
     (campaign_id, campaign_name, channel, spend_date, amount_ngn, clicks, conversions)
@@ -66,7 +27,6 @@ ON CONFLICT (campaign_id, spend_date) DO UPDATE SET
     conversions   = EXCLUDED.conversions,
     loaded_at     = now();
 """
- 
  
 def fetch_sheet_rows(credentials_path: str, sheet_id: str, cell_range: str) -> list:
     from google.oauth2 import service_account
