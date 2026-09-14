@@ -1,6 +1,12 @@
 import argparse
+import os
 import sys
- 
+import psycopg2
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from dotenv import load_dotenv
+load_dotenv()  # Reads the .env file and sets environment variables
+
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS marketing_spend (
     campaign_id     VARCHAR(20) NOT NULL,
@@ -14,7 +20,7 @@ CREATE TABLE IF NOT EXISTS marketing_spend (
     PRIMARY KEY (campaign_id, spend_date)
 );
 """
- 
+
 UPSERT_SQL = """
 INSERT INTO marketing_spend
     (campaign_id, campaign_name, channel, spend_date, amount_ngn, clicks, conversions)
@@ -27,36 +33,30 @@ ON CONFLICT (campaign_id, spend_date) DO UPDATE SET
     conversions   = EXCLUDED.conversions,
     loaded_at     = now();
 """
- 
+
 def fetch_sheet_rows(credentials_path: str, sheet_id: str, cell_range: str) -> list:
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
- 
+
     creds = service_account.Credentials.from_service_account_file(
         credentials_path,
         scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
     )
     service = build("sheets", "v4", credentials=creds)
- 
-    result = service.spreadsheets().values().get(
-        spreadsheetId=sheet_id, range=cell_range
-    ).execute()
- 
+    result = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=cell_range).execute()
+
     values = result.get("values", [])
     if not values:
         raise ValueError("Sheet returned no rows - check the range and sharing settings")
- 
+
     header, *rows = values
     return [dict(zip(header, row)) for row in rows]
- 
- 
+
 def load_to_postgres(dsn: str, rows: list):
     import psycopg2
- 
+
     conn = psycopg2.connect(dsn)
     cur = conn.cursor()
     cur.execute(CREATE_TABLE_SQL)
- 
+
     loaded = 0
     for row in rows:
         try:
@@ -71,42 +71,59 @@ def load_to_postgres(dsn: str, rows: list):
             ))
             loaded += 1
         except Exception as e:
+            conn.rollback()  # Rollback transaction so following rows can attempt execution
             print(f"  skipped a row (bad data?): {row} -- {e}", file=sys.stderr)
- 
+
     conn.commit()
     cur.close()
     conn.close()
     return loaded
- 
- 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--credentials", required=True)
-    parser.add_argument("--sheet-id", required=True)
-    parser.add_argument("--range", default="naijashop_marketing_ad_spend.csv!A1:G308")
+    parser.add_argument(
+        "--credentials",
+        default=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account-credentials.json"),
+        help="Path to service account JSON file",
+    )
+    parser.add_argument(
+        "--sheet-id",
+        default=os.getenv("SPREADSHEET_ID"),
+        help="Google Sheet ID",
+    )
+    parser.add_argument(
+        "--range",
+        default="marketing_spend!A1:G308",
+    )
     parser.add_argument(
         "--dsn",
-        default="dbname=naijashop user=postgres password=Joe4432 host=localhost",
+        default=os.getenv("POSTGRES_DSN"),
+        help="PostgreSQL connection string (e.g. postgresql://user:pass@localhost:5432/dbname)",
     )
     args = parser.parse_args()
- 
+
+    if not args.sheet_id:
+        print("ERROR: Sheet ID must be provided via --sheet-id or SPREADSHEET_ID env variable.", file=sys.stderr)
+        sys.exit(1)
+
+    if not args.dsn:
+        print("ERROR: Postgres DSN must be provided via --dsn or POSTGRES_DSN env variable.", file=sys.stderr)
+        sys.exit(1)
+
     print("Fetching marketing sheet via Google Sheets API...")
     try:
         rows = fetch_sheet_rows(args.credentials, args.sheet_id, args.range)
     except Exception as e:
         print(f"ERROR: could not read sheet: {e}", file=sys.stderr)
         sys.exit(1)
- 
-    print(f"  found {len(rows)} rows in the sheet")
- 
+    print(f"found {len(rows)} rows in the sheet")
+
     try:
         loaded = load_to_postgres(args.dsn, rows)
     except Exception as e:
         print(f"ERROR: could not load into Postgres: {e}", file=sys.stderr)
         sys.exit(1)
- 
     print(f"Loaded {loaded} rows into marketing_spend table.")
- 
- 
+
 if __name__ == "__main__":
     main()
