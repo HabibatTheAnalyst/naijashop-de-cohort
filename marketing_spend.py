@@ -1,10 +1,12 @@
 import argparse
 import os
 import sys
+
 import psycopg2
+from dotenv import load_dotenv
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from dotenv import load_dotenv
+
 load_dotenv()  # Reads the .env file and sets environment variables
 
 CREATE_TABLE_SQL = """
@@ -51,8 +53,6 @@ def fetch_sheet_rows(credentials_path: str, sheet_id: str, cell_range: str) -> l
     return [dict(zip(header, row)) for row in rows]
 
 def load_to_postgres(dsn: str, rows: list):
-    import psycopg2
-
     conn = psycopg2.connect(dsn)
     cur = conn.cursor()
     cur.execute(CREATE_TABLE_SQL)
@@ -83,7 +83,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--credentials",
-        default=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account-credentials.json"),
+        default=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service-account-credential.json"),
         help="Path to service account JSON file",
     )
     parser.add_argument(
@@ -120,7 +120,7 @@ def main():
 
     try:
         loaded = load_to_postgres(args.dsn, rows)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"ERROR: could not load into Postgres: {e}", file=sys.stderr)
         sys.exit(1)
     print(f"Loaded {loaded} rows into marketing_spend table.")
